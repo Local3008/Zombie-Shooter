@@ -1,0 +1,643 @@
+<!DOCTYPE html>  
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Zombie Shooter with Fast Zombies & Multi-direction Spawn</title>
+<style>
+  body {
+    margin: 0;
+    overflow: hidden;
+    background-color: #222;
+    color: white;
+    font-family: sans-serif;
+  }
+  #scoreBoard {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    font-size: 18px;
+    z-index: 10;
+  }
+  #gameOver {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 48px;
+    color: red;
+    display: none;
+    z-index: 20;
+  }
+  #restartBtn, #menuBtn {
+    position: absolute;
+    top: 60%;
+    font-size: 24px;
+    padding: 10px 20px;
+    display: none;
+    z-index: 21;
+    background: #fff;
+    color: #000;
+    border: none;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  #restartBtn {
+    left: 45%;
+  }
+  #menuBtn {
+    left: 55%;
+  }
+  #menu {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    text-align: center;
+    color: white;
+    z-index: 30;
+  }
+  #menu button {
+    font-size: 24px;
+    padding: 12px 30px;
+    margin: 10px;
+    cursor: pointer;
+    background: #444;
+    border: none;
+    color: white;
+    border-radius: 6px;
+    transition: background-color 0.3s ease;
+  }
+  #menu button:hover {
+    background: #666;
+  }
+  canvas {
+    display: block;
+    background: #444;
+  }
+  #roundStartText {
+    position: absolute;
+    top: 45%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 40px;
+    color: yellow;
+    text-shadow: 2px 2px 6px black;
+    z-index: 50;
+    display: none;
+  }
+  /* Headshot text style */
+  #headshotText {
+    position: absolute;
+    color: red;
+    font-weight: bold;
+    font-size: 20px;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<div id="scoreBoard">Round: 1 | Zombies Left: 0 | Health: 3 | Score: 0 | Weapon: 1 | Ammo: 110</div>
+
+<div id="gameOver">Game Over</div>
+<button id="restartBtn">Restart</button>
+<button id="menuBtn">Menu</button>
+
+<div id="menu">
+  <h1>Zombie Shooter</h1>
+  <button id="playBtn">Play</button>
+</div>
+
+<div id="roundStartText"></div>
+
+<canvas id="gameCanvas" width="800" height="600" style="display:none;"></canvas>
+
+<script>
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+  const scoreBoard = document.getElementById('scoreBoard');
+  const gameOverText = document.getElementById('gameOver');
+  const restartBtn = document.getElementById('restartBtn');
+  const menuBtn = document.getElementById('menuBtn');
+  const menu = document.getElementById('menu');
+  const playBtn = document.getElementById('playBtn');
+  const roundStartText = document.getElementById('roundStartText');
+
+  let gameRunning, playerHealth, lastHitTime, currentRound, zombiesToSpawn, zombiesAlive, score;
+  const bullets = [];
+  const zombies = [];
+  const ammoBoxes = [];
+  const keys = {};
+  const headshotSigns = [];
+
+  const player = {
+    x: canvas.width / 2,
+    y: canvas.height - 60,
+    width: 40,
+    height: 40,
+    speed: 4,
+    color: 'blue'
+  };
+
+  let weapons = {
+    1: { name: 'Primary', damage: 1, ammo: 110, hitsToKill: 3 },
+    2: { name: 'Secondary', damage: 2/3, ammo: 135, hitsToKill: 4 }
+  };
+
+  let currentWeapon = 1;
+  let paused = false;
+  let roundStarting = false;
+
+  // Spawn interval holders
+  let spawnZombieInterval, spawnAmmoBoxInterval;
+
+  function resetGameState() {
+    playerHealth = 3;
+    lastHitTime = 0;
+    currentWeapon = 1;
+    weapons[1].ammo = 110;
+    weapons[2].ammo = 135;
+    zombies.length = 0;
+    bullets.length = 0;
+    ammoBoxes.length = 0;
+    headshotSigns.length = 0;
+    player.x = canvas.width / 2;
+    player.y = canvas.height - 60;
+    currentRound = 1;
+    zombiesAlive = 0;
+    zombiesToSpawn = getZombiesForRound(currentRound);
+    score = 0;
+    gameRunning = true;
+    paused = false;
+    roundStarting = false;
+    gameOverText.style.display = 'none';
+    restartBtn.style.display = 'none';
+    menuBtn.style.display = 'none';
+    roundStartText.style.display = 'none';
+    updateScore();
+  }
+
+  // Calculate zombies to spawn by round
+  function getZombiesForRound(round) {
+    return 5 + round * 3;
+  }
+
+  function isBossRound(round) {
+    return round % 10 === 0;
+  }
+
+  function drawPlayer() {
+    ctx.fillStyle = player.color;
+    ctx.fillRect(player.x, player.y, player.width, player.height);
+  }
+
+  // Generate spawn position and type for zombies
+  function spawnZombie() {
+    if (zombiesToSpawn <= 0) return;
+
+    // Randomly choose spawn side: 0=top,1=bottom,2=left,3=right
+    const side = Math.floor(Math.random() * 4);
+
+    // Common base zombie attributes
+    let baseSpeed = (0.65 + Math.random() * 0.5 - 0.15) * 1.2;
+    let zombieColor = 'green';
+
+    if (isBossRound(currentRound)) {
+      if (!zombies.some(z => z.isBoss)) {
+        // Spawn boss zombie in center top-ish, special properties
+        zombies.push({
+          x: canvas.width / 2 - (30 * 3) / 2,
+          y: -90,
+          width: 30 * 3,
+          height: 30 * 3,
+          speed: 0.3,
+          maxHealth: 3 * 5,
+          health: 3 * 5,
+          color: 'darkred',
+          isBoss: true,
+          fast: false
+        });
+        zombiesToSpawn--;
+        zombiesAlive++;
+        updateScore();
+        return;
+      } else {
+        // Do not spawn regular zombies if boss already exists
+        if (Math.random() > 0.5) return;
+      }
+    }
+
+    // Decide if this zombie is fast type (~1/3 chance)
+    const fastZombieChance = 1 / 3;
+    let isFast = Math.random() < fastZombieChance;
+
+    // Adjust speed and color for fast zombies
+    if (isFast) {
+      baseSpeed *= 1.5;
+      zombieColor = '#a9e6ff'; // very light blue
+    }
+
+    // Spawn coordinates depend on side
+    let x, y;
+    switch(side) {
+      case 0: // top
+        x = Math.random() * (canvas.width - 30);
+        y = -40;
+        break;
+      case 1: // bottom
+        x = Math.random() * (canvas.width - 30);
+        y = canvas.height + 40;
+        break;
+      case 2: // left
+        x = -40;
+        y = Math.random() * (canvas.height - 30);
+        break;
+      case 3: // right
+        x = canvas.width + 40;
+        y = Math.random() * (canvas.height - 30);
+        break;
+    }
+
+    zombies.push({
+      x,
+      y,
+      width: 30,
+      height: 30,
+      speed: baseSpeed,
+      maxHealth: 3,
+      health: 3,
+      color: zombieColor,
+      isBoss: false,
+      fast: isFast
+    });
+
+    zombiesToSpawn--;
+    zombiesAlive++;
+    updateScore();
+  }
+
+  function spawnAmmoBox() {
+    const box = {
+      x: Math.random() * (canvas.width - 30),
+      y: Math.random() * (canvas.height - 100),
+      width: 20,
+      height: 20,
+      color: 'orange'
+    };
+    ammoBoxes.push(box);
+  }
+
+  function drawAmmoBoxes() {
+    for (let box of ammoBoxes) {
+      ctx.fillStyle = box.color;
+      ctx.fillRect(box.x, box.y, box.width, box.height);
+    }
+  }
+
+  function checkAmmoBoxPickup() {
+    for (let i = ammoBoxes.length - 1; i >= 0; i--) {
+      const box = ammoBoxes[i];
+      if (
+        box.x < player.x + player.width &&
+        box.x + box.width > player.x &&
+        box.y < player.y + player.height &&
+        box.y + box.height > player.y
+      ) {
+        weapons[currentWeapon].ammo += 30;  // Ammo box gives 30 ammo
+        ammoBoxes.splice(i, 1);
+        updateScore();
+      }
+    }
+  }
+
+  function drawZombies() {
+    for (let zombie of zombies) {
+      ctx.fillStyle = zombie.color;
+      ctx.fillRect(zombie.x, zombie.y, zombie.width, zombie.height);
+
+      // Draw health bar
+      ctx.fillStyle = 'darkred';
+      ctx.fillRect(zombie.x, zombie.y, zombie.width, 10);
+
+      ctx.fillStyle = 'red';
+      ctx.fillRect(zombie.x, zombie.y, zombie.width * (zombie.health / zombie.maxHealth), 10);
+
+      // Draw angry face for boss
+      if (zombie.isBoss) {
+        ctx.fillStyle = 'black';
+        ctx.font = `${zombie.height / 3}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        const centerX = zombie.x + zombie.width / 2;
+        const centerY = zombie.y + zombie.height / 2;
+
+        ctx.fillText('>', centerX - zombie.width / 8, centerY - zombie.height / 10);
+        ctx.fillText('<', centerX + zombie.width / 8, centerY - zombie.height / 10);
+
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(centerX - zombie.width / 4, centerY + zombie.height / 4);
+        ctx.lineTo(centerX + zombie.width / 4, centerY + zombie.height / 4);
+        ctx.stroke();
+      }
+    }
+  }
+
+  function moveZombies() {
+    zombies.forEach(zombie => {
+      // Move zombie towards player
+      const dx = player.x + player.width / 2 - (zombie.x + zombie.width / 2);
+      const dy = player.y + player.height / 2 - (zombie.y + zombie.height / 2);
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist > 0) {
+        zombie.x += (dx / dist) * zombie.speed;
+        zombie.y += (dy / dist) * zombie.speed;
+      }
+    });
+  }
+
+  function drawBullets() {
+    bullets.forEach(bullet => {
+      if (bullet.weapon === 1) {
+        ctx.fillStyle = 'yellow';  // Weapon 1 bullets: yellow
+      } else if (bullet.weapon === 2) {
+        ctx.fillStyle = 'lightblue'; // Weapon 2 bullets: light blue
+      } else {
+        ctx.fillStyle = 'white';   // fallback
+      }
+      ctx.beginPath();
+      ctx.arc(bullet.x, bullet.y, bullet.size, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
+
+  function moveBullets() {
+    for (let i = bullets.length - 1; i >= 0; i--) {
+      const b = bullets[i];
+      b.x += b.dx;
+      b.y += b.dy;
+
+      // Remove bullets offscreen
+      if (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height) {
+        bullets.splice(i, 1);
+        continue;
+      }
+
+      // Check collision with zombies
+      for (let j = zombies.length - 1; j >= 0; j--) {
+        const z = zombies[j];
+        if (
+          b.x > z.x &&
+          b.x < z.x + z.width &&
+          b.y > z.y &&
+          b.y < z.y + z.height
+        ) {
+          // Hit zombie
+          const weapon = weapons[b.weapon];
+          z.health -= weapon.damage;
+
+          // Check for headshot (if bullet hits upper 1/3rd)
+          if (b.y < z.y + z.height / 3) {
+            // Instant kill
+            z.health = 0;
+            score += 15; // headshot bonus
+            showHeadshotSign(z.x + z.width/2, z.y);
+          } else {
+            score += 5;
+          }
+
+          if (z.health <= 0) {
+            zombiesAlive--;
+            score += 10;
+            zombies.splice(j, 1);
+            if (zombiesAlive === 0 && zombiesToSpawn === 0) {
+              startNewRound();
+            }
+          }
+          bullets.splice(i, 1);
+          break;
+        }
+      }
+    }
+  }
+
+  function showHeadshotSign(x, y) {
+    headshotSigns.push({ x, y, alpha: 1 });
+  }
+
+  function drawHeadshotSigns() {
+    for (let i = headshotSigns.length - 1; i >= 0; i--) {
+      const sign = headshotSigns[i];
+      ctx.fillStyle = `rgba(255,0,0,${sign.alpha})`;
+      ctx.font = '20px Arial';
+      ctx.fillText('HEADSHOT', sign.x, sign.y);
+      sign.y -= 0.5;
+      sign.alpha -= 0.02;
+      if (sign.alpha <= 0) {
+        headshotSigns.splice(i, 1);
+      }
+    }
+  }
+
+  function checkZombiePlayerCollision() {
+    const now = Date.now();
+    for (let i = zombies.length - 1; i >= 0; i--) {
+      const z = zombies[i];
+      if (
+        z.x < player.x + player.width &&
+        z.x + z.width > player.x &&
+        z.y < player.y + player.height &&
+        z.y + z.height > player.y
+      ) {
+        if (now - lastHitTime > 800) {
+          playerHealth--;
+          lastHitTime = now;
+          if (playerHealth <= 0) {
+            endGame();
+          }
+          updateScore();
+        }
+      }
+    }
+  }
+
+  function updateScore() {
+    scoreBoard.textContent = `Round: ${currentRound} | Zombies Left: ${zombiesAlive + zombiesToSpawn} | Health: ${playerHealth} | Score: ${score} | Weapon: ${weapons[currentWeapon].name} | Ammo: ${Math.floor(weapons[currentWeapon].ammo)}`;
+  }
+
+  function startNewRound() {
+    roundStarting = true;
+    currentRound++;
+    zombiesToSpawn = getZombiesForRound(currentRound);
+    zombiesAlive = 0;
+    roundStartText.textContent = `Round ${currentRound} Starting...`;
+    roundStartText.style.display = 'block';
+    setTimeout(() => {
+      roundStartText.style.display = 'none';
+      roundStarting = false;
+    }, 3000);
+    updateScore();
+  }
+
+  function endGame() {
+    gameRunning = false;
+    gameOverText.style.display = 'block';
+    restartBtn.style.display = 'inline-block';
+    menuBtn.style.display = 'inline-block';
+  }
+
+  function drawPlayerHealth() {
+    // Optional visual health bar (covered by scoreboard text, but you could add here)
+  }
+
+  function update() {
+    if (!gameRunning || paused || roundStarting) return;
+
+    // Move player with keys
+    if (keys['arrowleft'] || keys['a']) {
+      player.x = Math.max(0, player.x - player.speed);
+    }
+    if (keys['arrowright'] || keys['d']) {
+      player.x = Math.min(canvas.width - player.width, player.x + player.speed);
+    }
+    if (keys['arrowup'] || keys['w']) {
+      player.y = Math.max(0, player.y - player.speed);
+    }
+    if (keys['arrowdown'] || keys['s']) {
+      player.y = Math.min(canvas.height - player.height, player.y + player.speed);
+    }
+
+    moveZombies();
+    moveBullets();
+    checkAmmoBoxPickup();
+    checkZombiePlayerCollision();
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    drawPlayer();
+    drawZombies();
+    drawBullets();
+    drawAmmoBoxes();
+    drawHeadshotSigns();
+  }
+
+  function gameLoop() {
+    update();
+    draw();
+    requestAnimationFrame(gameLoop);
+  }
+
+  // Shoot bullet toward mouse click position
+  function shootBullet(targetX, targetY) {
+    if (!gameRunning || paused || roundStarting) return;
+    const weapon = weapons[currentWeapon];
+    if (weapon.ammo <= 0) return;
+
+    weapon.ammo--;
+    updateScore();
+
+    // Bullet starting point: center top of player
+    const startX = player.x + player.width / 2;
+    const startY = player.y + player.height / 2;
+
+    // Calculate direction vector from player center to mouse click
+    const dx = targetX - startX;
+    const dy = targetY - startY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist === 0) return; // Avoid divide by zero
+
+    // Normalize and multiply by bullet speed
+    const speed = 10;
+    const velocityX = (dx / dist) * speed;
+    const velocityY = (dy / dist) * speed;
+
+    bullets.push({
+      x: startX,
+      y: startY,
+      dx: velocityX,
+      dy: velocityY,
+      size: 5,
+      weapon: currentWeapon
+    });
+  }
+
+  // Mouse click listener to shoot toward click
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 0) { // Left click only
+      // Get canvas bounding rect for correct coordinates
+      const rect = canvas.getBoundingClientRect();
+      const mouseX = e.clientX - rect.left;
+      const mouseY = e.clientY - rect.top;
+      shootBullet(mouseX, mouseY);
+    }
+  });
+
+  // Key handlers
+  window.addEventListener('keydown', e => {
+    keys[e.key.toLowerCase()] = true;
+
+    // Weapon switching 1 or 2 keys
+    if (e.key === '1') {
+      currentWeapon = 1;
+      updateScore();
+    }
+    if (e.key === '2') {
+      currentWeapon = 2;
+      updateScore();
+    }
+
+    // Remove space bar shooting
+    // (Previously space bar called shootBullet(), now removed)
+  });
+  window.addEventListener('keyup', e => {
+    keys[e.key.toLowerCase()] = false;
+  });
+
+  // Restart button
+  restartBtn.addEventListener('click', () => {
+    resetGameState();
+  });
+
+  // Menu button returns to menu screen
+  menuBtn.addEventListener('click', () => {
+    gameRunning = false;
+    canvas.style.display = 'none';
+    menu.style.display = 'block';
+    restartBtn.style.display = 'none';
+    menuBtn.style.display = 'none';
+    gameOverText.style.display = 'none';
+    scoreBoard.textContent = '';
+  });
+
+  // Play button starts game from menu
+  playBtn.addEventListener('click', () => {
+    menu.style.display = 'none';
+    canvas.style.display = 'block';
+    resetGameState();
+
+    // Start spawning zombies & ammo boxes repeatedly
+    clearInterval(spawnZombieInterval);
+    clearInterval(spawnAmmoBoxInterval);
+
+    spawnZombieInterval = setInterval(() => {
+      if (gameRunning && !paused && !roundStarting) {
+        spawnZombie();
+      }
+    }, 700); // roughly every 700ms
+
+    spawnAmmoBoxInterval = setInterval(() => {
+      if (gameRunning && !paused && !roundStarting) {
+        spawnAmmoBox();
+      }
+    }, 6000); // every 6 seconds
+  });
+
+  // Start the game loop
+  requestAnimationFrame(gameLoop);
+</script>
+
+</body>
+</html>
